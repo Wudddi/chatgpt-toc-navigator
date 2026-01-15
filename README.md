@@ -30,8 +30,14 @@ A lightweight browser extension that adds a draggable, clickable Table of Conten
 
 ## Demo / Screenshot
 
+<<<<<<< HEAD
 > Add your own screenshot here if you want:
 - `./assets/screenshot.png`
+=======
+- <img width="3399" height="1596" alt="image" src="https://github.com/user-attachments/assets/83c47078-38b8-4ba8-b908-a395402d00b7" />
+
+
+>>>>>>> bca2e3df145451b53b16a9a9c315b9c53daa35a6
 
 ---
 
@@ -63,9 +69,12 @@ You should see the TOC panel on the page.
 - **Jump**: Click a TOC item → smooth scroll to that conversation turn.
 
 ---
+<<<<<<< HEAD
 
 ## Permissions & Privacy
 
+=======
+>>>>>>> bca2e3df145451b53b16a9a9c315b9c53daa35a6
 ### Permissions used
 - `host_permissions`: only for:
   - `https://chatgpt.com/*`
