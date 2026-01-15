@@ -5,6 +5,12 @@
   const EXTRA_STYLE_ID = "cgtoc-extra-style";
   const STATE_KEY = "cgtoc_state_v2_sharedpos";
 
+  // ===== Performance knobs =====
+  const SHOW_ASSISTANT_PREVIEW = true; 
+  const MAX_ITEMS = 250;
+
+  let lastBuiltUserCount = -1;
+
   function djb2Hash(str) {
     let h = 5381;
     for (let i = 0; i < str.length; i++) h = (h * 33) ^ str.charCodeAt(i);
@@ -156,14 +162,12 @@
     };
 
     el.addEventListener("transitionend", onEnd);
-    // fallback
     setTimeout(() => {
       el.removeEventListener("transitionend", onEnd);
       finish();
     }, 220);
   }
 
-  // ✅ 修复版拖拽：纯点击不会被吞
   function makeDraggable(target, handle, { onDragEnd } = {}) {
     if (!target || !handle) return;
 
@@ -177,7 +181,6 @@
     const DRAG_THRESHOLD = 4;
 
     const onPointerDown = (e) => {
-      // interactive elements should not start drag
       if (e.target && e.target.closest && e.target.closest("button, input, textarea, a")) return;
       if (e.button !== undefined && e.button !== 0) return;
 
@@ -221,7 +224,6 @@
       if (isDragging) {
         target.__movedRecently = true;
         setTimeout(() => (target.__movedRecently = false), 200);
-
         onDragEnd && onDragEnd(target);
       }
     };
@@ -252,18 +254,13 @@
     if (!panel || !launcher) return;
 
     if (minimized) {
-      // ✅ 关键：min 前先把 panel 的位置保存成共享位置
       saveSharedPosFrom(panel);
       applySharedPosTo(launcher);
-
-      // 动画：panel fade out，launcher fade in
       showWithAnim(launcher, "flex");
       hideWithAnim(panel);
     } else {
-      // ✅ restore 前先把 launcher 的位置保存成共享位置
       saveSharedPosFrom(launcher);
       applySharedPosTo(panel);
-
       showWithAnim(panel, "flex");
       hideWithAnim(launcher);
     }
@@ -277,7 +274,6 @@
     const launcher = ensureLauncher();
     if (!panel || !launcher) return;
 
-    // apply shared position to both (even if one is hidden)
     applySharedPosTo(panel);
     applySharedPosTo(launcher);
 
@@ -309,7 +305,7 @@
     const refreshBtn = document.createElement("button");
     refreshBtn.id = "cgtoc-btn";
     refreshBtn.textContent = "Refresh";
-    refreshBtn.addEventListener("click", () => rebuild());
+    refreshBtn.addEventListener("click", () => rebuild({ force: true }));
 
     const minBtn = document.createElement("button");
     minBtn.id = "cgtoc-btn";
@@ -347,11 +343,9 @@
 
     document.documentElement.appendChild(panel);
 
-    // ✅ 拖拽面板：更新共享位置
     makeDraggable(panel, title, {
       onDragEnd: (el) => {
         saveSharedPosFrom(el);
-        // 同步另一端（就算隐藏也保持一致）
         const launcher = document.getElementById(LAUNCHER_ID);
         if (launcher) applySharedPosTo(launcher);
       },
@@ -369,6 +363,7 @@
   function extractFileNames(userNode) {
     if (!userNode) return [];
     const names = [];
+
     const candidates = Array.from(
       userNode.querySelectorAll(
         [
@@ -400,11 +395,13 @@
       });
     }
 
-    const rawText = (userNode.innerText || "").replace(/\s+/g, " ").trim();
-    const matches = rawText.match(
-      /\b[\w][\w\- .]{0,80}\.(pdf|docx?|pptx?|xlsx?|csv|txt|zip|rar|7z|png|jpe?g|gif|webp|mp4|mov|webm)\b/gi
-    );
-    if (matches) names.push(...matches);
+    if (!names.length) {
+      const rawText = (userNode.textContent || "").replace(/\s+/g, " ").trim();
+      const matches = rawText.match(
+        /\b[\w][\w\- .]{0,80}\.(pdf|docx?|pptx?|xlsx?|csv|txt|zip|rar|7z|png|jpe?g|gif|webp|mp4|mov|webm)\b/gi
+      );
+      if (matches) names.push(...matches);
+    }
 
     return uniq(names).map((n) => n.trim());
   }
@@ -419,7 +416,7 @@
   }
 
   function getUserDisplay(userNode) {
-    const text = (userNode?.innerText || "").trim();
+    const text = (userNode?.textContent || "").trim();
     const fileNames = extractFileNames(userNode);
     const imgSrcs = extractImages(userNode);
 
@@ -475,9 +472,9 @@
     return turns;
   }
 
-  function assignStableId(turn, index) {
+  function assignStableId(turn, globalIndex) {
     const userDisp = getUserDisplay(turn.user);
-    const base = `${index}:${userDisp.title}`;
+    const base = `${globalIndex}:${userDisp.title}`;
     const id = `cgtoc-${djb2Hash(base)}`;
 
     const existing = turn.root.getAttribute?.(DATA_ID);
@@ -488,15 +485,18 @@
     return id;
   }
 
-  function rebuild() {
+  function rebuild({ force = false } = {}) {
     ensurePanel();
     injectExtraStyles();
+
+    const userCount = document.querySelectorAll('[data-message-author-role="user"]').length;
+    if (!force && userCount === lastBuiltUserCount) return;
+    lastBuiltUserCount = userCount;
 
     const launcher = ensureLauncher();
     if (!launcher.__draggableBound) {
       launcher.__draggableBound = true;
 
-      // ✅ 拖拽圆点：更新共享位置，并同步面板
       makeDraggable(launcher, launcher, {
         onDragEnd: (el) => {
           saveSharedPosFrom(el);
@@ -506,45 +506,60 @@
       });
     }
 
-    const turns = getTurns();
+    const allTurns = getTurns();
+    const start = Math.max(0, allTurns.length - MAX_ITEMS);
+    const turns = allTurns.slice(start);
+
     const list = document.querySelector("#cgtoc-list");
     if (!list) return;
-    list.innerHTML = "";
 
-    turns.forEach((t, idx) => {
-      if (!t?.root) return;
+    list.textContent = "";
+    const frag = document.createDocumentFragment();
 
-      const id = assignStableId(t, idx);
+    for (let i = 0; i < turns.length; i++) {
+      const t = turns[i];
+      if (!t?.root) continue;
+
+      const globalIndex = start + i;
+      const id = assignStableId(t, globalIndex);
       const userDisp = getUserDisplay(t.user);
 
-      const assistantText = t.assistant ? t.assistant.textContent : "";
-      const assistantSummary = summarize(assistantText, 60);
+      let assistantSummary = "";
+      if (SHOW_ASSISTANT_PREVIEW) {
+        const aNode = t.assistant?.querySelector?.(".markdown") || t.assistant;
+        assistantSummary = summarize(aNode ? aNode.textContent : "", 60);
+      }
 
       const item = document.createElement("div");
       item.className = "cgtoc-item";
       item.dataset.target = id;
-      item.dataset.search = `${userDisp.title} ${assistantSummary}`.toLowerCase();
+      item.dataset.search = (SHOW_ASSISTANT_PREVIEW
+        ? `${userDisp.title} ${assistantSummary}`
+        : `${userDisp.title}`
+      ).toLowerCase();
 
       const titleRow = document.createElement("div");
-      titleRow.textContent = `${idx + 1}. ${userDisp.title}`;
+      titleRow.textContent = `${globalIndex + 1}. ${userDisp.title}`;
       item.appendChild(titleRow);
 
       if (userDisp.thumbs && userDisp.thumbs.length) {
         const thumbsWrap = document.createElement("div");
         thumbsWrap.className = "cgtoc-thumbs";
-        userDisp.thumbs.forEach((src) => {
+        for (const src of userDisp.thumbs) {
           const im = document.createElement("img");
           im.className = "cgtoc-thumb";
           im.src = src;
           thumbsWrap.appendChild(im);
-        });
+        }
         item.appendChild(thumbsWrap);
       }
 
-      const meta = document.createElement("div");
-      meta.className = "cgtoc-meta";
-      meta.textContent = assistantSummary;
-      item.appendChild(meta);
+      if (SHOW_ASSISTANT_PREVIEW) {
+        const meta = document.createElement("div");
+        meta.className = "cgtoc-meta";
+        meta.textContent = assistantSummary;
+        item.appendChild(meta);
+      }
 
       item.addEventListener("click", () => {
         const el = document.getElementById(id) || document.querySelector(`[${DATA_ID}="${id}"]`);
@@ -552,8 +567,10 @@
         el.scrollIntoView({ behavior: "smooth", block: "start" });
       });
 
-      list.appendChild(item);
-    });
+      frag.appendChild(item);
+    }
+
+    list.appendChild(frag);
 
     const search = document.querySelector("#cgtoc-search");
     if (search?.value) filterList(search.value);
@@ -569,16 +586,50 @@
   }
 
   function startObserver() {
-    let timer = null;
-    const debounced = () => {
-      clearTimeout(timer);
-      timer = setTimeout(rebuild, 250);
+    let scheduled = false;
+    let lastObservedUserCount = 0;
+
+    const schedule = () => {
+      if (scheduled) return;
+      scheduled = true;
+
+      const run = () => {
+        scheduled = false;
+        const userCount = document.querySelectorAll('[data-message-author-role="user"]').length;
+
+        if (userCount !== lastObservedUserCount) {
+          lastObservedUserCount = userCount;
+          rebuild();
+        }
+      };
+
+      if ("requestIdleCallback" in window) {
+        requestIdleCallback(run, { timeout: 1200 });
+      } else {
+        setTimeout(run, 600);
+      }
     };
 
-    const obs = new MutationObserver(debounced);
-    obs.observe(document.body, { childList: true, subtree: true });
+    const root = document.querySelector("main") || document.body;
 
-    rebuild();
+    const obs = new MutationObserver((mutations) => {
+      for (const m of mutations) {
+        for (const n of m.addedNodes) {
+          if (!(n instanceof HTMLElement)) continue;
+          if (
+            n.matches?.('[data-testid="conversation-turn"], [data-message-author-role="user"]') ||
+            n.querySelector?.('[data-testid="conversation-turn"], [data-message-author-role="user"]')
+          ) {
+            schedule();
+            return;
+          }
+        }
+      }
+    });
+
+    obs.observe(root, { childList: true, subtree: true });
+
+    schedule();
 
     // keep inside viewport after resize
     window.addEventListener("resize", () => {
